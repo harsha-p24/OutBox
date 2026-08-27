@@ -6,7 +6,10 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "worker": "tsx watch src/worker.ts",
+    "worker:once": "tsx src/worker.ts",
+    "dev:once": "tsx src/server.ts"
   },
   "keywords": [],
   "author": "",
