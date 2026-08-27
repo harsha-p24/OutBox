@@ -1,11 +1,13 @@
 import "dotenv/config";
 import express from "express";
 import { prisma } from "./lib/prisma";
+import campaignsRouter from "./routes/campaigns";
 
 const app = express();
 const PORT = 3000;
 
 app.use(express.json());
+app.use("/campaigns", campaignsRouter);
 
 app.get("/", (_req, res) => {
   res.json({
