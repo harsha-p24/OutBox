@@ -3,7 +3,11 @@ import { Worker, Job } from "bullmq";
 import { connection } from "./lib/redis";
 import { emailQueue } from "./lib/queue";
 import { prisma } from "./lib/prisma";
-import { tryConsume, msUntilNextHour } from "./lib/rateLimiter";
+import {
+  tryConsume,
+  msUntilNextHour,
+  waitForSendSlot,
+} from "./lib/rateLimiter";
 import { createTransport } from "./lib/mailer";
 
 const MIN_DELAY_MS = Number(process.env.MIN_EMAIL_DELAY_MS ?? 2000);
@@ -43,6 +47,11 @@ const worker = new Worker(
       throw new RateLimitDelay(msUntilNextHour());
     }
 
+    await waitForSendSlot(
+      email.senderId,
+      MIN_DELAY_MS
+    );
+
     await prisma.email.update({
       where: { id: email.id },
       data: { status: "PROCESSING" },
@@ -72,7 +81,7 @@ const worker = new Worker(
       throw err;
     }
 
-    await new Promise((r) => setTimeout(r, MIN_DELAY_MS));
+   
   },
   { connection, concurrency: CONCURRENCY }
 );
