@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
+import { emailQueue } from "../lib/queue";
 import crypto from "crypto";
 
 const router = Router();
@@ -50,6 +51,15 @@ router.post("/", async (req, res) => {
       },
       include: { emails: true },
     });
+
+    for (const email of campaign.emails) {
+      const delay = Math.max(0, email.scheduledAt.getTime() - Date.now());
+      await emailQueue.add(
+        "send-email",
+        { emailId: email.id },
+        { jobId: email.id, delay }
+      );
+    }
 
     res.status(201).json({ ok: true, campaign });
   } catch (err: any) {
