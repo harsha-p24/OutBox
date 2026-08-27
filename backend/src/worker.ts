@@ -4,6 +4,7 @@ import { connection } from "./lib/redis";
 import { emailQueue } from "./lib/queue";
 import { prisma } from "./lib/prisma";
 import { tryConsume, msUntilNextHour } from "./lib/rateLimiter";
+import { createTransport } from "./lib/mailer";
 
 const MIN_DELAY_MS = Number(process.env.MIN_EMAIL_DELAY_MS ?? 2000);
 const HOURLY_LIMIT = Number(process.env.MAX_EMAILS_PER_HOUR_PER_SENDER ?? 200);
@@ -22,41 +23,47 @@ const worker = new Worker(
   async (job: Job) => {
     const { emailId } = job.data as { emailId: string };
 
-    const email = await prisma.email.findUnique({ where: { id: emailId } });
+    const email = await prisma.email.findUnique({
+      where: { id: emailId },
+      include: { sender: true },
+    });
     if (!email) {
       console.log(`[worker] Email ${emailId} not found in DB, skipping.`);
       return;
     }
 
-    // Idempotency: never resend something already sent
     if (email.status === "SENT") {
       console.log(`[worker] Email ${emailId} already SENT, skipping.`);
       return;
     }
 
-    // Rate limit check (atomic Redis counter, safe across concurrent workers)
     const allowed = await tryConsume(email.senderId, HOURLY_LIMIT);
     if (!allowed) {
       console.log(`[worker] Sender ${email.senderId} hit hourly limit. Rescheduling.`);
       throw new RateLimitDelay(msUntilNextHour());
     }
 
-    // Mark as SENDING before attempting to send
     await prisma.email.update({
       where: { id: email.id },
       data: { status: "PROCESSING" },
     });
 
     try {
-      // --- STUB: real Ethereal sending comes in Step 8 ---
-      console.log(`[worker] Sending email ${email.id} to ${email.recipient}...`);
-      await new Promise((r) => setTimeout(r, 200)); // simulate send latency
+      const transport = createTransport(email.sender.smtpUser, email.sender.smtpPass);
+
+      const info = await transport.sendMail({
+        from: email.sender.email,
+        to: email.recipient,
+        subject: email.subject,
+        html: email.body,
+      });
+
+      console.log(`[worker] Email ${email.id} sent. Preview URL: ${nodemailerPreview(info)}`);
 
       await prisma.email.update({
         where: { id: email.id },
-        data: { status: "SENT", sentAt: new Date() },
+        data: { status: "SENT", sentAt: new Date(), messageId: info.messageId },
       });
-      console.log(`[worker] Email ${email.id} marked SENT.`);
     } catch (err: any) {
       await prisma.email.update({
         where: { id: email.id },
@@ -65,11 +72,19 @@ const worker = new Worker(
       throw err;
     }
 
-    // Throttle: minimum delay between sends
     await new Promise((r) => setTimeout(r, MIN_DELAY_MS));
   },
   { connection, concurrency: CONCURRENCY }
 );
+
+function nodemailerPreview(info: any): string {
+  try {
+    const nodemailer = require("nodemailer");
+    return nodemailer.getTestMessageUrl(info) || "(no preview url)";
+  } catch {
+    return "(no preview url)";
+  }
+}
 
 worker.on("completed", (job) => {
   console.log(`[worker] Job ${job.id} completed.`);
