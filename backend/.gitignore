@@ -12,3 +12,4 @@ src/generated/
 .windsurf/
 
 *.log
+skills-lock.json
