@@ -82,3 +82,76 @@ router.get("/", requireAuth, async (req: any, res) => {
 });
 
 export default router;
+/*
+ * Get campaign statistics.
+ */
+router.get("/:id/stats", requireAuth, async (req: any, res: any) => {
+  try {
+    const campaign = await prisma.campaign.findFirst({
+      where: {
+        id: req.params.id,
+        userId: req.user.id,
+      },
+      select: {
+        id: true,
+        status: true,
+        emails: {
+          select: {
+            status: true,
+          },
+        },
+      },
+    });
+
+    if (!campaign) {
+      return res.status(404).json({
+        ok: false,
+        error: "Campaign not found.",
+      });
+    }
+
+    const total = campaign.emails.length;
+
+    const scheduled = campaign.emails.filter(
+      (email) => email.status === "SCHEDULED"
+    ).length;
+
+    const processing = campaign.emails.filter(
+      (email) => email.status === "PROCESSING"
+    ).length;
+
+    const sent = campaign.emails.filter(
+      (email) => email.status === "SENT"
+    ).length;
+
+    const failed = campaign.emails.filter(
+      (email) => email.status === "FAILED"
+    ).length;
+
+    const completed = sent + failed;
+
+    const progress =
+      total === 0 ? 0 : Math.round((completed / total) * 100);
+
+    return res.json({
+      ok: true,
+      stats: {
+        total,
+        scheduled,
+        processing,
+        sent,
+        failed,
+        completed,
+        progress,
+        campaignStatus: campaign.status,
+      },
+    });
+  } catch (err: any) {
+    console.error("[campaigns] Get campaign stats failed:", err);
+
+    return res.status(500).json({
+      ok: false,
+      error: String(err?.message ?? err),
+    });
+  }
+});
