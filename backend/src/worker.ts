@@ -9,6 +9,10 @@ import {
   waitForSendSlot,
 } from "./lib/rateLimiter";
 import { createTransport } from "./lib/mailer";
+import {
+  ensureEmailIndex,
+  updateEmailIndex,
+} from "./lib/elasticsearch";
 
 const MIN_DELAY_MS = Number(
   process.env.MIN_EMAIL_DELAY_MS ?? 2000
@@ -81,12 +85,6 @@ const worker = new Worker(
 
     /*
      * Use the hourly limit configured for this campaign.
-     *
-     * Example:
-     * campaign.hourlyLimit = 10
-     *
-     * This means this campaign's sender can send
-     * according to the configured hourly limit.
      */
     const hourlyLimit = email.campaign.hourlyLimit;
 
@@ -99,17 +97,15 @@ const worker = new Worker(
      * Hourly limit reached.
      *
      * Do not permanently fail the job.
-     * Instead, throw a special error so the failed
-     * event handler can put it back into BullMQ
-     * with a delay until the next hour.
+     * Reschedule it for the next available hour.
      */
     if (!allowed) {
       const delayMs = msUntilNextHour();
 
       console.log(
         `[worker] Sender ${email.senderId} reached hourly limit ` +
-        `(${hourlyLimit}). Rescheduling email ${emailId} ` +
-        `for ${delayMs}ms later.`
+          `(${hourlyLimit}). Rescheduling email ${emailId} ` +
+          `for ${delayMs}ms later.`
       );
 
       throw new RateLimitDelay(delayMs);
@@ -118,8 +114,8 @@ const worker = new Worker(
     /*
      * Distributed minimum-delay protection.
      *
-     * This uses Redis so multiple worker instances
-     * cannot all send from the same sender at once.
+     * Redis prevents multiple workers from sending
+     * from the same sender at the same time.
      */
     await waitForSendSlot(
       email.senderId,
@@ -172,35 +168,79 @@ const worker = new Worker(
       /*
        * Mark email as SENT only after SMTP succeeds.
        */
+      const sentAt = new Date();
+
       await prisma.email.update({
         where: {
           id: email.id,
         },
         data: {
           status: "SENT",
-          sentAt: new Date(),
+          sentAt,
           messageId: info.messageId,
           errorMessage: null,
         },
       });
+
+      /*
+       * Update Elasticsearch.
+       *
+       * Elasticsearch failure must not make a
+       * successfully-sent email become FAILED.
+       */
+      try {
+        await updateEmailIndex(email.id, {
+          status: "SENT",
+          sentAt,
+          messageId: info.messageId,
+          errorMessage: null,
+        });
+
+        console.log(
+          `[worker] Elasticsearch updated for email ${email.id}.`
+        );
+      } catch (indexError) {
+        console.error(
+          `[worker] Failed to update Elasticsearch for email ${email.id}:`,
+          indexError
+        );
+      }
     } catch (err: any) {
       /*
        * SMTP/send failure.
-       *
-       * Store the failure in the database so the
-       * dashboard can display FAILED.
        */
+      const errorMessage = String(
+        err?.message ?? err
+      );
+
       await prisma.email.update({
         where: {
           id: email.id,
         },
         data: {
           status: "FAILED",
-          errorMessage: String(
-            err?.message ?? err
-          ),
+          errorMessage,
         },
       });
+
+      /*
+       * Update Elasticsearch with FAILED status.
+       */
+      try {
+        await updateEmailIndex(email.id, {
+          status: "FAILED",
+          errorMessage,
+        });
+
+        console.log(
+          `[worker] Elasticsearch updated for failed email ${email.id}.`
+        );
+      } catch (indexError) {
+        console.error(
+          `[worker] Failed to update Elasticsearch for failed email ${email.id}:`,
+          indexError
+        );
+      }
 
       console.error(
         `[worker] Email ${email.id} failed:`,
@@ -270,7 +310,7 @@ worker.on("failed", async (job, err) => {
   if (err instanceof RateLimitDelay) {
     console.log(
       `[worker] Re-enqueuing rate-limited job ${job.id} ` +
-      `with delay ${err.delayMs}ms.`
+        `with delay ${err.delayMs}ms.`
     );
 
     try {
@@ -303,10 +343,20 @@ worker.on("failed", async (job, err) => {
 });
 
 /*
- * Worker startup message.
+ * Initialize Elasticsearch before reporting
+ * that the worker has started.
  */
-console.log(
-  `[worker] Started with ` +
-  `concurrency=${CONCURRENCY}, ` +
-  `minDelay=${MIN_DELAY_MS}ms`
-);
+ensureEmailIndex()
+  .then(() => {
+    console.log(
+      `[worker] Started with ` +
+        `concurrency=${CONCURRENCY}, ` +
+        `minDelay=${MIN_DELAY_MS}ms`
+    );
+  })
+  .catch((error) => {
+    console.error(
+      "[worker] Failed to initialize Elasticsearch:",
+      error
+    );
+  });
