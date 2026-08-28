@@ -1,12 +1,21 @@
 import { connection } from "./redis";
 
 function hourKey(senderId: string, date = new Date()) {
-  const bucket = `${date.getUTCFullYear()}${date.getUTCMonth()}${date.getUTCDate()}${date.getUTCHours()}`;
+  const bucket =
+    `${date.getUTCFullYear()}` +
+    `${date.getUTCMonth()}` +
+    `${date.getUTCDate()}` +
+    `${date.getUTCHours()}`;
+
   return `ratelimit:${senderId}:${bucket}`;
 }
 
 /**
- * Atomically increments the sender's hourly counter.
+ * Atomically checks and consumes one email from the
+ * sender's hourly rate limit.
+ *
+ * Redis Lua guarantees that the check and increment
+ * happen as one atomic operation.
  */
 export async function tryConsume(
   senderId: string,
@@ -14,13 +23,31 @@ export async function tryConsume(
 ): Promise<boolean> {
   const key = hourKey(senderId);
 
-  const count = await connection.incr(key);
+  const script = `
+    local current = tonumber(redis.call("GET", KEYS[1]) or "0")
+    local limit = tonumber(ARGV[1])
 
-  if (count === 1) {
-    await connection.expire(key, 3600);
-  }
+    if current >= limit then
+      return 0
+    end
 
-  return count <= limit;
+    local newCount = redis.call("INCR", KEYS[1])
+
+    if newCount == 1 then
+      redis.call("EXPIRE", KEYS[1], 3600)
+    end
+
+    return 1
+  `;
+
+  const result = await connection.eval(
+    script,
+    1,
+    key,
+    String(limit)
+  );
+
+  return Number(result) === 1;
 }
 
 /**
@@ -38,8 +65,9 @@ export function msUntilNextHour(): number {
 /**
  * Redis-backed distributed minimum-delay throttle.
  *
- * This prevents multiple workers from sending emails
- * at the same time for the same sender.
+ * Multiple workers/instances use the same Redis key,
+ * preventing them from sending from the same sender
+ * at the same time.
  */
 export async function waitForSendSlot(
   senderId: string,
@@ -73,6 +101,8 @@ export async function waitForSendSlot(
       10
     );
 
-    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    await new Promise((resolve) =>
+      setTimeout(resolve, waitMs)
+    );
   }
 }
