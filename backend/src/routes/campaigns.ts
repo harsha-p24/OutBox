@@ -28,14 +28,9 @@ function requireAuth(req: any, res: any, next: any) {
 }
 
 /*
- * Create campaign
+ * Create campaign.
  *
- * A campaign is created as SCHEDULED.
- *
- * Each email receives its own scheduledAt time
- * based on:
- *
- * startTime + (index * delayMs)
+ * New campaign starts as SCHEDULED.
  */
 router.post("/", requireAuth, async (req: any, res) => {
   const parsed = createCampaignSchema.safeParse(req.body);
@@ -67,10 +62,6 @@ router.post("/", requireAuth, async (req: any, res) => {
     });
   }
 
-  /*
-   * Do not allow campaigns to be scheduled
-   * in the past.
-   */
   if (start.getTime() < Date.now()) {
     return res.status(400).json({
       ok: false,
@@ -80,8 +71,7 @@ router.post("/", requireAuth, async (req: any, res) => {
 
   try {
     /*
-     * Make sure the sender belongs to the
-     * authenticated user.
+     * Make sure sender belongs to current user.
      */
     const sender = await prisma.sender.findFirst({
       where: {
@@ -98,7 +88,7 @@ router.post("/", requireAuth, async (req: any, res) => {
     }
 
     /*
-     * Create campaign and emails together.
+     * Create campaign and emails.
      */
     const campaign = await prisma.campaign.create({
       data: {
@@ -109,7 +99,6 @@ router.post("/", requireAuth, async (req: any, res) => {
         startTime: start,
         delayMs,
         hourlyLimit,
-
         status: "SCHEDULED",
 
         emails: {
@@ -118,11 +107,9 @@ router.post("/", requireAuth, async (req: any, res) => {
             recipient,
             subject,
             body,
-
             scheduledAt: new Date(
               start.getTime() + index * delayMs
             ),
-
             idempotencyKey: crypto.randomUUID(),
           })),
         },
@@ -134,10 +121,7 @@ router.post("/", requireAuth, async (req: any, res) => {
     });
 
     /*
-     * Schedule every email in BullMQ.
-     *
-     * BullMQ will wait until each email's
-     * scheduledAt time before processing it.
+     * Add every email to BullMQ.
      */
     for (const email of campaign.emails) {
       const delay = Math.max(
@@ -157,15 +141,15 @@ router.post("/", requireAuth, async (req: any, res) => {
       );
     }
 
-    /*
-     * Return the complete campaign.
-     */
     return res.status(201).json({
       ok: true,
       campaign,
     });
   } catch (err: any) {
-    console.error("[campaigns] Create campaign failed:", err);
+    console.error(
+      "[campaigns] Create campaign failed:",
+      err
+    );
 
     return res.status(500).json({
       ok: false,
@@ -175,7 +159,7 @@ router.post("/", requireAuth, async (req: any, res) => {
 });
 
 /*
- * Get campaigns for the authenticated user.
+ * Get all campaigns for current user.
  */
 router.get("/", requireAuth, async (req: any, res) => {
   try {
@@ -199,7 +183,10 @@ router.get("/", requireAuth, async (req: any, res) => {
       campaigns,
     });
   } catch (err: any) {
-    console.error("[campaigns] Get campaigns failed:", err);
+    console.error(
+      "[campaigns] Get campaigns failed:",
+      err
+    );
 
     return res.status(500).json({
       ok: false,
@@ -237,7 +224,10 @@ router.get("/:id", requireAuth, async (req: any, res) => {
       campaign,
     });
   } catch (err: any) {
-    console.error("[campaigns] Get campaign failed:", err);
+    console.error(
+      "[campaigns] Get campaign failed:",
+      err
+    );
 
     return res.status(500).json({
       ok: false,
@@ -245,5 +235,312 @@ router.get("/:id", requireAuth, async (req: any, res) => {
     });
   }
 });
+
+/*
+ * PAUSE CAMPAIGN
+ *
+ * Only SCHEDULED campaigns can be paused.
+ *
+ * We remove waiting BullMQ jobs and mark the
+ * campaign as DRAFT so it can be resumed later.
+ */
+router.post(
+  "/:id/pause",
+  requireAuth,
+  async (req: any, res) => {
+    try {
+      const campaign = await prisma.campaign.findFirst({
+        where: {
+          id: req.params.id,
+          userId: req.user.id,
+        },
+
+        include: {
+          emails: true,
+        },
+      });
+
+      if (!campaign) {
+        return res.status(404).json({
+          ok: false,
+          error: "Campaign not found.",
+        });
+      }
+
+      if (campaign.status !== "SCHEDULED") {
+        return res.status(400).json({
+          ok: false,
+          error:
+            `Campaign cannot be paused from ${campaign.status} status.`,
+        });
+      }
+
+      /*
+       * Remove queued jobs.
+       *
+       * SENT emails have already completed and do not
+       * need to be removed.
+       */
+      for (const email of campaign.emails) {
+        if (email.status === "SCHEDULED") {
+          try {
+            await emailQueue.remove(email.id);
+          } catch (queueError) {
+            console.error(
+              `[campaigns] Failed to remove job ${email.id}:`,
+              queueError
+            );
+          }
+        }
+      }
+
+      const updatedCampaign =
+        await prisma.campaign.update({
+          where: {
+            id: campaign.id,
+          },
+
+          data: {
+            status: "DRAFT",
+          },
+
+          include: {
+            emails: true,
+          },
+        });
+
+      return res.json({
+        ok: true,
+        message: "Campaign paused.",
+        campaign: updatedCampaign,
+      });
+    } catch (err: any) {
+      console.error(
+        "[campaigns] Pause campaign failed:",
+        err
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error: String(err?.message ?? err),
+      });
+    }
+  }
+);
+
+/*
+ * RESUME CAMPAIGN
+ *
+ * A DRAFT campaign can be resumed.
+ *
+ * Only emails that have not already been sent are
+ * added back to BullMQ.
+ */
+router.post(
+  "/:id/resume",
+  requireAuth,
+  async (req: any, res) => {
+    try {
+      const campaign = await prisma.campaign.findFirst({
+        where: {
+          id: req.params.id,
+          userId: req.user.id,
+        },
+
+        include: {
+          emails: true,
+        },
+      });
+
+      if (!campaign) {
+        return res.status(404).json({
+          ok: false,
+          error: "Campaign not found.",
+        });
+      }
+
+      if (campaign.status !== "DRAFT") {
+        return res.status(400).json({
+          ok: false,
+          error:
+            `Campaign cannot be resumed from ${campaign.status} status.`,
+        });
+      }
+
+      /*
+       * Resume campaign.
+       */
+      const updatedCampaign =
+        await prisma.campaign.update({
+          where: {
+            id: campaign.id,
+          },
+
+          data: {
+            status: "SCHEDULED",
+          },
+
+          include: {
+            emails: true,
+          },
+        });
+
+      /*
+       * Re-add unsent emails to BullMQ.
+       *
+       * Emails whose scheduled time has already passed
+       * are queued immediately.
+       */
+      for (const email of updatedCampaign.emails) {
+        if (email.status !== "SCHEDULED") {
+          continue;
+        }
+
+        const delay = Math.max(
+          0,
+          email.scheduledAt.getTime() - Date.now()
+        );
+
+        try {
+          await emailQueue.add(
+            "send-email",
+            {
+              emailId: email.id,
+            },
+            {
+              jobId: email.id,
+              delay,
+            }
+          );
+        } catch (queueError: any) {
+          /*
+           * If the job already exists, do not fail the
+           * whole resume operation.
+           */
+          console.error(
+            `[campaigns] Failed to queue email ${email.id}:`,
+            queueError
+          );
+        }
+      }
+
+      return res.json({
+        ok: true,
+        message: "Campaign resumed.",
+        campaign: updatedCampaign,
+      });
+    } catch (err: any) {
+      console.error(
+        "[campaigns] Resume campaign failed:",
+        err
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error: String(err?.message ?? err),
+      });
+    }
+  }
+);
+
+/*
+ * CANCEL CAMPAIGN
+ *
+ * A campaign can be cancelled while it is SCHEDULED
+ * or DRAFT.
+ *
+ * We delete pending BullMQ jobs and mark the campaign
+ * as FAILED because the current schema does not have
+ * a CANCELLED status.
+ */
+router.post(
+  "/:id/cancel",
+  requireAuth,
+  async (req: any, res) => {
+    try {
+      const campaign = await prisma.campaign.findFirst({
+        where: {
+          id: req.params.id,
+          userId: req.user.id,
+        },
+
+        include: {
+          emails: true,
+        },
+      });
+
+      if (!campaign) {
+        return res.status(404).json({
+          ok: false,
+          error: "Campaign not found.",
+        });
+      }
+
+      if (
+        campaign.status !== "SCHEDULED" &&
+        campaign.status !== "DRAFT"
+      ) {
+        return res.status(400).json({
+          ok: false,
+          error:
+            `Campaign cannot be cancelled from ${campaign.status} status.`,
+        });
+      }
+
+      /*
+       * Remove pending BullMQ jobs.
+       */
+      for (const email of campaign.emails) {
+        if (email.status === "SCHEDULED") {
+          try {
+            await emailQueue.remove(email.id);
+          } catch (queueError) {
+            console.error(
+              `[campaigns] Failed to remove job ${email.id}:`,
+              queueError
+            );
+          }
+        }
+      }
+
+      /*
+       * Current schema does not have CANCELLED.
+       *
+       * Therefore FAILED is used to represent a
+       * campaign that was stopped by the user.
+       */
+      const updatedCampaign =
+        await prisma.campaign.update({
+          where: {
+            id: campaign.id,
+          },
+
+          data: {
+            status: "FAILED",
+          },
+
+          include: {
+            emails: true,
+          },
+        });
+
+      return res.json({
+        ok: true,
+        message: "Campaign cancelled.",
+        campaign: updatedCampaign,
+      });
+    } catch (err: any) {
+      console.error(
+        "[campaigns] Cancel campaign failed:",
+        err
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error: String(err?.message ?? err),
+      });
+    }
+  }
+);
 
 export default router;
