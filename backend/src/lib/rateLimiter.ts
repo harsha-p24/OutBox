@@ -63,11 +63,12 @@ export function msUntilNextHour(): number {
 }
 
 /**
- * Redis-backed distributed minimum-delay throttle.
+ * Redis-backed distributed minimum-delay scheduler.
  *
- * Multiple workers/instances use the same Redis key,
- * preventing them from sending from the same sender
- * at the same time.
+ * Redis atomically reserves the next available send time.
+ *
+ * Multiple workers can call this simultaneously without
+ * sending emails from the same sender too close together.
  */
 export async function waitForSendSlot(
   senderId: string,
@@ -75,32 +76,44 @@ export async function waitForSendSlot(
 ): Promise<void> {
   const key = `send-throttle:${senderId}`;
 
-  while (true) {
-    const now = Date.now();
+  const script = `
+    local now = tonumber(ARGV[1])
+    local delay = tonumber(ARGV[2])
 
-    const result = await connection.set(
-      key,
-      String(now + minimumDelayMs),
+    local last = tonumber(redis.call("GET", KEYS[1]) or "0")
+
+    local slot = math.max(now, last)
+
+    local nextAvailable = slot + delay
+
+    -- Keep the key alive long enough for the reserved
+    -- queue of send slots to be consumed.
+    local ttl = math.max(delay * 10, 60000)
+
+    redis.call(
+      "SET",
+      KEYS[1],
+      tostring(nextAvailable),
       "PX",
-      minimumDelayMs,
-      "NX"
-    );
+      ttl
+    )
 
-    if (result === "OK") {
-      return;
-    }
+    return slot
+  `;
 
-    const nextAllowed = await connection.get(key);
+  const slot = Number(
+    await connection.eval(
+      script,
+      1,
+      key,
+      String(Date.now()),
+      String(minimumDelayMs)
+    )
+  );
 
-    if (!nextAllowed) {
-      continue;
-    }
+  const waitMs = Math.max(slot - Date.now(), 0);
 
-    const waitMs = Math.max(
-      Number(nextAllowed) - Date.now(),
-      10
-    );
-
+  if (waitMs > 0) {
     await new Promise((resolve) =>
       setTimeout(resolve, waitMs)
     );
