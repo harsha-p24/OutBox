@@ -45,6 +45,14 @@ model Sender {
   @@index([userId])
 }
 
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
 model Campaign {
   id          String   @id @default(uuid())
   userId      String
@@ -54,6 +62,7 @@ model Campaign {
   startTime   DateTime
   delayMs     Int
   hourlyLimit Int
+  status      CampaignStatus @default(DRAFT)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
