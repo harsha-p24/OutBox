@@ -15,7 +15,12 @@ type Campaign = {
   id: string;
   subject: string;
   body: string;
-  status: "DRAFT" | "SCHEDULED" | "RUNNING" | "COMPLETED" | "FAILED";
+  status:
+    | "DRAFT"
+    | "SCHEDULED"
+    | "RUNNING"
+    | "COMPLETED"
+    | "FAILED";
   startTime: string;
   emails: Email[];
 };
@@ -54,23 +59,57 @@ export default function Home() {
         throw new Error(data.error || "Failed to load campaigns");
       }
 
-      setCampaigns(data.campaigns || []);
+      const campaignList = data.campaigns || [];
+
+      setCampaigns(campaignList);
 
       const statsEntries = await Promise.all(
-        (data.campaigns || []).map(async (campaign: Campaign) => {
-          const statsResponse = await fetch(
-            `${API_URL}/campaigns/${campaign.id}/stats`,
-            {
-              credentials: "include",
+        campaignList.map(async (campaign: Campaign) => {
+          try {
+            const statsResponse = await fetch(
+              `${API_URL}/campaigns/${campaign.id}/stats`,
+              {
+                credentials: "include",
+              }
+            );
+
+            if (!statsResponse.ok) {
+              return [
+                campaign.id,
+                {
+                  total: campaign.emails?.length || 0,
+                  scheduled: 0,
+                  processing: 0,
+                  sent: 0,
+                  failed: 0,
+                  completed: 0,
+                  progress: 0,
+                  campaignStatus: campaign.status,
+                },
+              ] as [string, Stats];
             }
-          );
 
-          const statsData = await statsResponse.json();
+            const statsData = await statsResponse.json();
 
-          return [
-            campaign.id,
-            statsData.stats,
-          ] as [string, Stats];
+            return [
+              campaign.id,
+              statsData.stats,
+            ] as [string, Stats];
+          } catch {
+            return [
+              campaign.id,
+              {
+                total: campaign.emails?.length || 0,
+                scheduled: 0,
+                processing: 0,
+                sent: 0,
+                failed: 0,
+                completed: 0,
+                progress: 0,
+                campaignStatus: campaign.status,
+              },
+            ] as [string, Stats];
+          }
         })
       );
 
@@ -106,7 +145,9 @@ export default function Home() {
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || `Failed to ${action} campaign`);
+        throw new Error(
+          data.error || `Failed to ${action} campaign`
+        );
       }
 
       await loadCampaigns();
@@ -118,9 +159,7 @@ export default function Home() {
   if (loading) {
     return (
       <main style={styles.page}>
-        <div style={styles.center}>
-          Loading OutBox...
-        </div>
+        <div style={styles.center}>Loading OutBox...</div>
       </main>
     );
   }
@@ -143,11 +182,7 @@ export default function Home() {
         </button>
       </header>
 
-      {error && (
-        <div style={styles.error}>
-          {error}
-        </div>
-      )}
+      {error && <div style={styles.error}>{error}</div>}
 
       <section style={styles.summary}>
         <div style={styles.summaryCard}>
@@ -158,27 +193,33 @@ export default function Home() {
         <div style={styles.summaryCard}>
           <span>Running</span>
           <strong>
-            {campaigns.filter(
-              (c) => c.status === "RUNNING"
-            ).length}
+            {
+              campaigns.filter(
+                (campaign) => campaign.status === "RUNNING"
+              ).length
+            }
           </strong>
         </div>
 
         <div style={styles.summaryCard}>
           <span>Completed</span>
           <strong>
-            {campaigns.filter(
-              (c) => c.status === "COMPLETED"
-            ).length}
+            {
+              campaigns.filter(
+                (campaign) => campaign.status === "COMPLETED"
+              ).length
+            }
           </strong>
         </div>
 
         <div style={styles.summaryCard}>
           <span>Failed</span>
           <strong>
-            {campaigns.filter(
-              (c) => c.status === "FAILED"
-            ).length}
+            {
+              campaigns.filter(
+                (campaign) => campaign.status === "FAILED"
+              ).length
+            }
           </strong>
         </div>
       </section>
@@ -242,9 +283,7 @@ export default function Home() {
                       <div
                         style={{
                           ...styles.progressBar,
-                          width: `${
-                            campaignStats?.progress ?? 0
-                          }%`,
+                          width: `${campaignStats?.progress ?? 0}%`,
                         }}
                       />
                     </div>
@@ -255,18 +294,22 @@ export default function Home() {
                       label="Total"
                       value={campaignStats?.total ?? 0}
                     />
+
                     <Stat
                       label="Scheduled"
                       value={campaignStats?.scheduled ?? 0}
                     />
+
                     <Stat
                       label="Processing"
                       value={campaignStats?.processing ?? 0}
                     />
+
                     <Stat
                       label="Sent"
                       value={campaignStats?.sent ?? 0}
                     />
+
                     <Stat
                       label="Failed"
                       value={campaignStats?.failed ?? 0}
@@ -274,21 +317,8 @@ export default function Home() {
                   </div>
 
                   <div style={styles.actions}>
-                    {campaign.status === "RUNNING" && (
-                      <button
-                        style={styles.secondaryButton}
-                        onClick={() =>
-                          campaignAction(
-                            campaign.id,
-                            "pause"
-                          )
-                        }
-                      >
-                        Pause
-                      </button>
-                    )}
-
-                    {campaign.status === "SCHEDULED" && (
+                    {(campaign.status === "RUNNING" ||
+                      campaign.status === "SCHEDULED") && (
                       <button
                         style={styles.secondaryButton}
                         onClick={() =>
@@ -304,7 +334,7 @@ export default function Home() {
 
                     {campaign.status === "DRAFT" && (
                       <button
-                        style={styles.secondaryButton}
+                        style={styles.primaryButton}
                         onClick={() =>
                           campaignAction(
                             campaign.id,
@@ -316,22 +346,7 @@ export default function Home() {
                       </button>
                     )}
 
-                    {campaign.status === "RUNNING" ||
-                    campaign.status === "SCHEDULED" ? (
-                      <button
-                        style={styles.secondaryButton}
-                        onClick={() =>
-                          campaignAction(
-                            campaign.id,
-                            "cancel"
-                          )
-                        }
-                      >
-                        Cancel
-                      </button>
-                    ) : null}
-
-                    {campaign.status === "DRAFT" ? (
+                    {campaign.status === "DRAFT" && (
                       <button
                         style={styles.secondaryButton}
                         onClick={() =>
@@ -343,7 +358,22 @@ export default function Home() {
                       >
                         Resume
                       </button>
-                    ) : null}
+                    )}
+
+                    {(campaign.status === "RUNNING" ||
+                      campaign.status === "SCHEDULED") && (
+                      <button
+                        style={styles.dangerButton}
+                        onClick={() =>
+                          campaignAction(
+                            campaign.id,
+                            "cancel"
+                          )
+                        }
+                      >
+                        Cancel
+                      </button>
+                    )}
                   </div>
                 </article>
               );
@@ -397,8 +427,7 @@ const styles: Record<string, React.CSSProperties> = {
     minHeight: "100vh",
     background: "#f6f7f9",
     padding: "40px",
-    fontFamily:
-      "Arial, Helvetica, sans-serif",
+    fontFamily: "Arial, Helvetica, sans-serif",
     color: "#171717",
   },
 
@@ -433,8 +462,7 @@ const styles: Record<string, React.CSSProperties> = {
     maxWidth: "1100px",
     margin: "0 auto 35px",
     display: "grid",
-    gridTemplateColumns:
-      "repeat(4, minmax(0, 1fr))",
+    gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
     gap: "15px",
   },
 
@@ -563,8 +591,7 @@ const styles: Record<string, React.CSSProperties> = {
   statsGrid: {
     marginTop: "22px",
     display: "grid",
-    gridTemplateColumns:
-      "repeat(5, minmax(0, 1fr))",
+    gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
     gap: "10px",
   },
 
@@ -583,9 +610,27 @@ const styles: Record<string, React.CSSProperties> = {
     gap: "10px",
   },
 
+  primaryButton: {
+    border: "none",
+    background: "#111",
+    color: "#fff",
+    padding: "9px 15px",
+    borderRadius: "7px",
+    cursor: "pointer",
+  },
+
   secondaryButton: {
     border: "1px solid #d4d4d4",
     background: "#fff",
+    padding: "9px 15px",
+    borderRadius: "7px",
+    cursor: "pointer",
+  },
+
+  dangerButton: {
+    border: "1px solid #fecaca",
+    background: "#fff",
+    color: "#b91c1c",
     padding: "9px 15px",
     borderRadius: "7px",
     cursor: "pointer",
