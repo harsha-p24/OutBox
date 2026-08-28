@@ -12,10 +12,10 @@ type Props = {
 };
 
 export default function ComposeModal({
+  senderId,
   onClose,
   onCreated,
 }: Props) {
-  const [senderId, setSenderId] = useState("");
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
   const [recipients, setRecipients] = useState("");
@@ -32,21 +32,40 @@ export default function ComposeModal({
     setLoading(true);
 
     try {
+      if (!senderId.trim()) {
+        throw new Error("Sender ID is not available.");
+      }
+
       const recipientList = recipients
         .split(/[\n,]+/)
         .map((email) => email.trim())
         .filter(Boolean);
 
-      if (!senderId.trim()) {
-        throw new Error("Sender ID is required.");
-      }
-
       if (recipientList.length === 0) {
         throw new Error("Add at least one recipient.");
       }
 
+      if (!subject.trim()) {
+        throw new Error("Subject is required.");
+      }
+
+      if (!body.trim()) {
+        throw new Error("Email body is required.");
+      }
+
       if (!startTime) {
         throw new Error("Select a start time.");
+      }
+
+      const delay = Number(delayMs);
+      const limit = Number(hourlyLimit);
+
+      if (!Number.isFinite(delay) || delay < 1) {
+        throw new Error("Delay must be at least 1 ms.");
+      }
+
+      if (!Number.isFinite(limit) || limit < 1) {
+        throw new Error("Hourly limit must be at least 1.");
       }
 
       const response = await fetch(`${API_URL}/campaigns`, {
@@ -57,12 +76,12 @@ export default function ComposeModal({
         },
         body: JSON.stringify({
           senderId,
-          subject,
-          body,
+          subject: subject.trim(),
+          body: body.trim(),
           recipients: recipientList,
           startTime: new Date(startTime).toISOString(),
-          delayMs: Number(delayMs),
-          hourlyLimit: Number(hourlyLimit),
+          delayMs: delay,
+          hourlyLimit: limit,
         }),
       });
 
@@ -76,9 +95,11 @@ export default function ComposeModal({
 
       onCreated();
       onClose();
-    } catch (err: any) {
+    } catch (err: unknown) {
       setError(
-        err?.message || "Failed to create campaign."
+        err instanceof Error
+          ? err.message
+          : "Failed to create campaign."
       );
     } finally {
       setLoading(false);
@@ -90,9 +111,7 @@ export default function ComposeModal({
       <div style={styles.modal}>
         <div style={styles.header}>
           <div>
-            <h2 style={styles.title}>
-              Create Campaign
-            </h2>
+            <h2 style={styles.title}>Create Campaign</h2>
 
             <p style={styles.subtitle}>
               Schedule and send an email campaign.
@@ -103,69 +122,53 @@ export default function ComposeModal({
             type="button"
             onClick={onClose}
             style={styles.close}
+            disabled={loading}
           >
             ×
           </button>
         </div>
 
-        {error && (
-          <div style={styles.error}>
-            {error}
-          </div>
-        )}
+        {error && <div style={styles.error}>{error}</div>}
 
         <form onSubmit={createCampaign}>
-          <label style={styles.label}>
-            Sender ID
-          </label>
+          <label style={styles.label}>Sender ID</label>
 
           <input
             value={senderId}
-            onChange={(e) =>
-              setSenderId(e.target.value)
-            }
-            placeholder="Enter sender ID"
-            style={styles.input}
+            readOnly
+            style={{
+              ...styles.input,
+              backgroundColor: "#f3f4f6",
+              color: "#6b7280",
+            }}
           />
 
-          <label style={styles.label}>
-            Subject
-          </label>
+          <label style={styles.label}>Subject</label>
 
           <input
             value={subject}
-            onChange={(e) =>
-              setSubject(e.target.value)
-            }
+            onChange={(e) => setSubject(e.target.value)}
             placeholder="Email subject"
             required
             style={styles.input}
           />
 
-          <label style={styles.label}>
-            Email Body
-          </label>
+          <label style={styles.label}>Email Body</label>
 
           <textarea
             value={body}
-            onChange={(e) =>
-              setBody(e.target.value)
-            }
+            onChange={(e) => setBody(e.target.value)}
             placeholder="Write your email..."
             required
             rows={7}
             style={styles.textarea}
           />
 
-          <label style={styles.label}>
-            Recipients
-          </label>
+          <label style={styles.label}>Recipients</label>
 
           <textarea
             value={recipients}
-            onChange={(e) =>
-              setRecipients(e.target.value)
-            }
+            onChange={(e) => setRecipients(e.target.value)}
             placeholder={
               "one@example.com\n" +
               "two@example.com\n" +
@@ -176,56 +179,43 @@ export default function ComposeModal({
           />
 
           <p style={styles.hint}>
-            Enter one email per line or separate emails
-            with commas.
+            Enter one email per line or separate emails with commas.
           </p>
 
           <div style={styles.grid}>
             <div>
-              <label style={styles.label}>
-                Start Time
-              </label>
+              <label style={styles.label}>Start Time</label>
 
               <input
                 type="datetime-local"
                 value={startTime}
-                onChange={(e) =>
-                  setStartTime(e.target.value)
-                }
+                onChange={(e) => setStartTime(e.target.value)}
                 required
                 style={styles.input}
               />
             </div>
 
             <div>
-              <label style={styles.label}>
-                Delay (ms)
-              </label>
+              <label style={styles.label}>Delay (ms)</label>
 
               <input
                 type="number"
                 min="1"
                 value={delayMs}
-                onChange={(e) =>
-                  setDelayMs(e.target.value)
-                }
+                onChange={(e) => setDelayMs(e.target.value)}
                 required
                 style={styles.input}
               />
             </div>
 
             <div>
-              <label style={styles.label}>
-                Hourly Limit
-              </label>
+              <label style={styles.label}>Hourly Limit</label>
 
               <input
                 type="number"
                 min="1"
                 value={hourlyLimit}
-                onChange={(e) =>
-                  setHourlyLimit(e.target.value)
-                }
+                onChange={(e) => setHourlyLimit(e.target.value)}
                 required
                 style={styles.input}
               />
@@ -247,9 +237,7 @@ export default function ComposeModal({
               style={styles.submit}
               disabled={loading}
             >
-              {loading
-                ? "Creating..."
-                : "Create Campaign"}
+              {loading ? "Creating..." : "Create Campaign"}
             </button>
           </div>
         </form>
@@ -262,40 +250,42 @@ const styles: Record<string, React.CSSProperties> = {
   overlay: {
     position: "fixed",
     inset: 0,
-    background: "rgba(0,0,0,0.45)",
+    backgroundColor: "rgba(0, 0, 0, 0.65)",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     padding: "20px",
-    zIndex: 1000,
+    zIndex: 50,
   },
 
   modal: {
     width: "100%",
-    maxWidth: "720px",
+    maxWidth: "700px",
     maxHeight: "90vh",
     overflowY: "auto",
-    background: "#fff",
-    borderRadius: "16px",
-    padding: "28px",
-    boxShadow: "0 20px 60px rgba(0,0,0,0.2)",
+    backgroundColor: "#ffffff",
+    color: "#111827",
+    borderRadius: "12px",
+    padding: "24px",
+    boxShadow: "0 20px 50px rgba(0,0,0,0.3)",
   },
 
   header: {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "flex-start",
-    marginBottom: "22px",
+    marginBottom: "20px",
   },
 
   title: {
     margin: 0,
-    fontSize: "24px",
+    fontSize: "22px",
+    fontWeight: 700,
   },
 
   subtitle: {
-    margin: "6px 0 0",
-    color: "#737373",
+    marginTop: "6px",
+    color: "#6b7280",
     fontSize: "14px",
   },
 
@@ -304,49 +294,56 @@ const styles: Record<string, React.CSSProperties> = {
     background: "transparent",
     fontSize: "28px",
     cursor: "pointer",
-    lineHeight: 1,
+    color: "#6b7280",
+  },
+
+  error: {
+    marginBottom: "16px",
+    padding: "10px 12px",
+    borderRadius: "8px",
+    backgroundColor: "#fee2e2",
+    color: "#b91c1c",
+    fontSize: "14px",
   },
 
   label: {
     display: "block",
-    fontSize: "13px",
+    marginBottom: "6px",
+    marginTop: "14px",
+    fontSize: "14px",
     fontWeight: 600,
-    marginBottom: "7px",
-    marginTop: "16px",
   },
 
   input: {
     width: "100%",
-    boxSizing: "border-box",
-    border: "1px solid #d4d4d4",
+    padding: "10px 12px",
+    border: "1px solid #d1d5db",
     borderRadius: "8px",
-    padding: "11px 12px",
-    fontSize: "14px",
     outline: "none",
+    fontSize: "14px",
+    boxSizing: "border-box",
   },
 
   textarea: {
     width: "100%",
-    boxSizing: "border-box",
-    border: "1px solid #d4d4d4",
+    padding: "10px 12px",
+    border: "1px solid #d1d5db",
     borderRadius: "8px",
-    padding: "11px 12px",
+    outline: "none",
     fontSize: "14px",
     resize: "vertical",
-    fontFamily: "Arial, Helvetica, sans-serif",
-    outline: "none",
+    boxSizing: "border-box",
   },
 
   hint: {
-    margin: "6px 0 0",
-    color: "#737373",
+    marginTop: "6px",
+    color: "#6b7280",
     fontSize: "12px",
   },
 
   grid: {
     display: "grid",
-    gridTemplateColumns:
-      "repeat(3, minmax(0, 1fr))",
+    gridTemplateColumns: "repeat(3, 1fr)",
     gap: "12px",
   },
 
@@ -354,34 +351,24 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     justifyContent: "flex-end",
     gap: "10px",
-    marginTop: "25px",
-    paddingTop: "20px",
-    borderTop: "1px solid #e5e5e5",
+    marginTop: "24px",
   },
 
   cancel: {
-    border: "1px solid #d4d4d4",
-    background: "#fff",
-    padding: "10px 17px",
+    padding: "10px 16px",
+    border: "1px solid #d1d5db",
     borderRadius: "8px",
+    backgroundColor: "#ffffff",
     cursor: "pointer",
   },
 
   submit: {
-    border: "none",
-    background: "#111",
-    color: "#fff",
     padding: "10px 18px",
+    border: "none",
     borderRadius: "8px",
+    backgroundColor: "#2563eb",
+    color: "#ffffff",
     cursor: "pointer",
-  },
-
-  error: {
-    background: "#fee2e2",
-    color: "#991b1b",
-    padding: "11px",
-    borderRadius: "8px",
-    fontSize: "13px",
-    marginBottom: "15px",
+    fontWeight: 600,
   },
 };
