@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import cors from "cors";
 import session from "express-session";
 import passport from "./lib/passport";
 import { prisma } from "./lib/prisma";
@@ -9,6 +10,13 @@ import authRouter from "./routes/auth";
 const app = express();
 const PORT = 3000;
 
+app.use(
+  cors({
+    origin: "http://localhost:3001",
+    credentials: true,
+  })
+);
+
 app.use(express.json());
 
 app.use(
@@ -16,7 +24,7 @@ app.use(
     secret: process.env.SESSION_SECRET!,
     resave: false,
     saveUninitialized: false,
-    cookie: { maxAge: 1000 * 60 * 60 * 24 }, // 1 day
+    cookie: { maxAge: 1000 * 60 * 60 * 24 },
   })
 );
 

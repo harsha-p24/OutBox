@@ -12,10 +12,10 @@ router.get(
 // Google redirects back here after the user approves
 router.get(
   "/google/callback",
-  passport.authenticate("google", {
-    failureRedirect: "/auth/failure",
-    successRedirect: "/auth/success",
-  })
+  passport.authenticate("google", { failureRedirect: "/auth/failure" }),
+  (_req, res) => {
+    res.redirect("http://localhost:3001/dashboard");
+  }
 );
 
 router.get("/success", (req, res) => {
