@@ -155,3 +155,68 @@ router.get("/:id/stats", requireAuth, async (req: any, res: any) => {
     });
   }
 });
+
+/*
+ * Get email logs for a campaign.
+ */
+router.get("/:id/emails", requireAuth, async (req: any, res: any) => {
+  try {
+    const campaign = await prisma.campaign.findFirst({
+      where: {
+        id: req.params.id,
+        userId: req.user.id,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!campaign) {
+      return res.status(404).json({
+        ok: false,
+        error: "Campaign not found.",
+      });
+    }
+
+    const status = req.query.status as
+      | "SCHEDULED"
+      | "PROCESSING"
+      | "SENT"
+      | "FAILED"
+      | undefined;
+
+    const emails = await prisma.email.findMany({
+      where: {
+        campaignId: campaign.id,
+        ...(status ? { status } : {}),
+      },
+      select: {
+        id: true,
+        recipient: true,
+        subject: true,
+        status: true,
+        scheduledAt: true,
+        sentAt: true,
+        messageId: true,
+        errorMessage: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+      orderBy: {
+        scheduledAt: "asc",
+      },
+    });
+
+    return res.json({
+      ok: true,
+      emails,
+    });
+  } catch (err: any) {
+    console.error("[campaigns] Get email logs failed:", err);
+
+    return res.status(500).json({
+      ok: false,
+      error: String(err?.message ?? err),
+    });
+  }
+});
