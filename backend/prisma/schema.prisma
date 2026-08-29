@@ -104,6 +104,7 @@ model SlackConnection {
   id          String   @id @default(uuid())
   userId      String   @unique
   accessToken String
+  webhookUrl  String?
   slackUserId String?
   teamId      String?
   createdAt   DateTime @default(now())

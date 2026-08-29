@@ -100,6 +100,14 @@ export default function Dashboard() {
             <div className="font-medium">{user?.name}</div>
             <div className="text-gray-400">{user?.email}</div>
           </div>
+          
+          
+          <a
+            href={`${API_URL}/slack/connect`}
+            className="ml-4 rounded bg-purple-700 px-3 py-1.5 text-sm hover:bg-purple-600"
+          >
+            Connect Slack
+          </a>
           <button
             onClick={handleLogout}
             className="ml-4 rounded bg-gray-800 px-3 py-1.5 text-sm hover:bg-gray-700"

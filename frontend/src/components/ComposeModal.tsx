@@ -160,14 +160,14 @@ export default function ComposeModal({ senderId: initialSenderId, onClose, onCre
 
 const styles: Record<string, React.CSSProperties> = {
   overlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: "20px", zIndex: 1000 },
-  modal: { width: "100%", maxWidth: "720px", maxHeight: "90vh", overflowY: "auto", background: "#fff", borderRadius: "16px", padding: "28px", boxShadow: "0 20px 60px rgba(0,0,0,0.2)" },
+  modal: { width: "100%", maxWidth: "720px", maxHeight: "90vh", overflowY: "auto", background: "#fff", color: "#171717", borderRadius: "16px", padding: "28px", boxShadow: "0 20px 60px rgba(0,0,0,0.2)" },
   header: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "22px" },
   title: { margin: 0, fontSize: "24px" },
   subtitle: { margin: "6px 0 0", color: "#737373", fontSize: "14px" },
   close: { border: "none", background: "transparent", fontSize: "28px", cursor: "pointer", lineHeight: 1 },
-  label: { display: "block", fontSize: "13px", fontWeight: 600, marginBottom: "7px", marginTop: "16px" },
-  input: { width: "100%", boxSizing: "border-box", border: "1px solid #d4d4d4", borderRadius: "8px", padding: "11px 12px", fontSize: "14px", outline: "none" },
-  textarea: { width: "100%", boxSizing: "border-box", border: "1px solid #d4d4d4", borderRadius: "8px", padding: "11px 12px", fontSize: "14px", resize: "vertical", fontFamily: "Arial, Helvetica, sans-serif", outline: "none" },
+  label: { display: "block", fontSize: "13px", fontWeight: 600, marginBottom: "7px", marginTop: "16px", color: "#171717" },
+  input: { width: "100%", boxSizing: "border-box", border: "1px solid #d4d4d4", borderRadius: "8px", padding: "11px 12px", fontSize: "14px", outline: "none", color: "#171717", background: "#ffffff" },
+  textarea: { width: "100%", boxSizing: "border-box", border: "1px solid #d4d4d4", borderRadius: "8px", padding: "11px 12px", fontSize: "14px", resize: "vertical", fontFamily: "Arial, Helvetica, sans-serif", outline: "none", color: "#171717", background: "#ffffff" },
   hint: { margin: "6px 0 0", color: "#737373", fontSize: "12px" },
   grid: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "12px" },
   footer: { display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "25px", paddingTop: "20px", borderTop: "1px solid #e5e5e5" },

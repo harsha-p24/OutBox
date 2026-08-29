@@ -6,6 +6,7 @@ import passport from "./lib/passport";
 import { prisma } from "./lib/prisma";
 import campaignsRouter from "./routes/campaigns";
 import authRouter from "./routes/auth";
+import slackRouter from "./routes/slack";
 import { emailQueue } from "./lib/queue";
 import { createBullBoard } from "@bull-board/api";
 import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
@@ -31,6 +32,7 @@ app.use(passport.session());
 
 app.use("/auth", authRouter);
 app.use("/campaigns", campaignsRouter);
+app.use("/slack", slackRouter);
 
 const serverAdapter = new ExpressAdapter();
 serverAdapter.setBasePath("/admin/queues");

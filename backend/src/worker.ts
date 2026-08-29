@@ -9,6 +9,7 @@ import {
   waitForSendSlot,
 } from "./lib/rateLimiter";
 import { createTransport } from "./lib/mailer";
+import { notifySlackRateLimit } from "./lib/slackNotify";
 import {
   elasticsearch,
   EMAIL_INDEX,
@@ -150,6 +151,7 @@ const worker = new Worker(
           "ms later."
       );
 
+      await notifySlackRateLimit(email.campaign.userId, email.sender.email, hourlyLimit);
       throw new RateLimitDelay(delayMs);
     }
 
