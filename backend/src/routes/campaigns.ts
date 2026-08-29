@@ -1,68 +1,94 @@
 import { Router } from "express";
-import { z } from "zod";
+import crypto from "crypto";
+
 import { prisma } from "../lib/prisma";
 import { emailQueue } from "../lib/queue";
-import crypto from "crypto";
-import {
-  elasticsearch,
-  EMAIL_INDEX,
-  ensureEmailIndex,
-} from "../lib/elasticsearch";
 
 const router = Router();
 
-const createCampaignSchema = z.object({
-  senderId: z.string(),
-  subject: z.string().min(1),
-  body: z.string().min(1),
-  recipients: z.array(z.string().email()).min(1),
-  startTime: z.string().datetime(),
-  delayMs: z.number().int().positive(),
-  hourlyLimit: z.number().int().positive(),
-});
-
-function requireAuth(req: any, res: any, next: any) {
-  if (!req.isAuthenticated || !req.isAuthenticated()) {
-    return res.status(401).json({
-      ok: false,
-      error: "Not logged in.",
-    });
-  }
-
-  next();
-}
-
-/*
- * Create a campaign and schedule all emails.
- */
-router.post("/", requireAuth, async (req: any, res: any) => {
-  const parsed = createCampaignSchema.safeParse(req.body);
-
-  if (!parsed.success) {
-    return res.status(400).json({
-      ok: false,
-      error: parsed.error.flatten(),
-    });
-  }
-
-  const {
-    senderId,
-    subject,
-    body,
-    recipients,
-    startTime,
-    delayMs,
-    hourlyLimit,
-  } = parsed.data;
-
-  const start = new Date(startTime);
-  const userId = req.user.id;
-
+router.post("/", async (req, res) => {
   try {
-    /*
-     * Create campaign and all email records
-     * inside the database.
-     */
+    const {
+      userId,
+      senderId,
+      subject,
+      body,
+      recipients,
+      startTime,
+      delayMs,
+      hourlyLimit,
+    } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({
+        error: "userId is required",
+      });
+    }
+
+    if (!senderId) {
+      return res.status(400).json({
+        error: "senderId is required",
+      });
+    }
+
+    if (!subject) {
+      return res.status(400).json({
+        error: "subject is required",
+      });
+    }
+
+    if (!body) {
+      return res.status(400).json({
+        error: "body is required",
+      });
+    }
+
+    if (
+      !Array.isArray(recipients) ||
+      recipients.length === 0
+    ) {
+      return res.status(400).json({
+        error: "At least one recipient is required",
+      });
+    }
+
+    const delayMsValue = Number(delayMs ?? 2000);
+    const hourlyLimitValue = Number(hourlyLimit ?? 100);
+
+    const start = startTime
+      ? new Date(startTime)
+      : new Date(Date.now() + 10000);
+
+    if (Number.isNaN(start.getTime())) {
+      return res.status(400).json({
+        error: "Invalid startTime",
+      });
+    }
+
+    if (delayMsValue < 0) {
+      return res.status(400).json({
+        error: "delayMs cannot be negative",
+      });
+    }
+
+    if (hourlyLimitValue < 1) {
+      return res.status(400).json({
+        error: "hourlyLimit must be at least 1",
+      });
+    }
+
+    const sender = await prisma.sender.findUnique({
+      where: {
+        id: senderId,
+      },
+    });
+
+    if (!sender) {
+      return res.status(404).json({
+        error: "Sender not found",
+      });
+    }
+
     const campaign = await prisma.campaign.create({
       data: {
         userId,
@@ -70,20 +96,26 @@ router.post("/", requireAuth, async (req: any, res: any) => {
         subject,
         body,
         startTime: start,
-        delayMs,
-        hourlyLimit,
+        delayMs: delayMsValue,
+        hourlyLimit: hourlyLimitValue,
+        status: "SCHEDULED",
 
         emails: {
-          create: recipients.map((recipient, index) => ({
-            senderId,
-            recipient,
-            subject,
-            body,
-            scheduledAt: new Date(
-              start.getTime() + index * delayMs
-            ),
-            idempotencyKey: crypto.randomUUID(),
-          })),
+          create: recipients.map(
+            (recipient: string, index: number) => ({
+              senderId,
+              recipient: String(recipient).trim(),
+              subject,
+              body,
+
+              scheduledAt: new Date(
+                start.getTime() +
+                  index * delayMsValue
+              ),
+
+              idempotencyKey: crypto.randomUUID(),
+            })
+          ),
         },
       },
 
@@ -92,28 +124,11 @@ router.post("/", requireAuth, async (req: any, res: any) => {
       },
     });
 
-    /*
-     * Make sure Elasticsearch index exists.
-     *
-     * If Elasticsearch is temporarily unavailable,
-     * campaign creation should still not crash.
-     */
-    try {
-      await ensureEmailIndex();
-    } catch (error) {
-      console.error(
-        "[campaigns] Elasticsearch initialization failed:",
-        error
-      );
-    }
-
-    /*
-     * Add every email to BullMQ as a delayed job.
-     */
     for (const email of campaign.emails) {
-      const delay = Math.max(
+      const jobDelay = Math.max(
         0,
-        email.scheduledAt.getTime() - Date.now()
+        email.scheduledAt.getTime() -
+          Date.now()
       );
 
       await emailQueue.add(
@@ -123,271 +138,123 @@ router.post("/", requireAuth, async (req: any, res: any) => {
         },
         {
           jobId: email.id,
-          delay,
+          delay: jobDelay,
+          removeOnComplete: true,
+          removeOnFail: false,
         }
       );
     }
 
-    /*
-     * Index the newly created emails in Elasticsearch.
-     *
-     * Elasticsearch is used for searching emails.
-     *
-     * We intentionally don't fail the campaign if indexing
-     * fails because PostgreSQL remains the source of truth.
-     */
-    try {
-      await Promise.all(
-        campaign.emails.map(async (email) => {
-          await elasticsearch.index({
-            index: EMAIL_INDEX,
-            id: email.id,
-
-            document: {
-              id: email.id,
-              campaignId: email.campaignId,
-              senderId: email.senderId,
-              recipient: email.recipient,
-              subject: email.subject,
-              body: email.body,
-              status: email.status,
-              scheduledAt: email.scheduledAt,
-              sentAt: email.sentAt,
-              messageId: email.messageId,
-              errorMessage: email.errorMessage,
-              createdAt: email.createdAt,
-            },
-          });
-        })
-      );
-
-      console.log(
-        `[campaigns] Indexed ${campaign.emails.length} emails in Elasticsearch.`
-      );
-    } catch (indexError) {
-      console.error(
-        "[campaigns] Failed to index emails in Elasticsearch:",
-        indexError
-      );
-    }
-
     return res.status(201).json({
-      ok: true,
-      campaign,
+      success: true,
+
+      campaign: {
+        id: campaign.id,
+        status: campaign.status,
+        startTime: campaign.startTime,
+        delayMs: campaign.delayMs,
+        hourlyLimit: campaign.hourlyLimit,
+      },
+
+      emails: campaign.emails.map(
+        (email) => ({
+          id: email.id,
+          recipient: email.recipient,
+          status: email.status,
+          scheduledAt: email.scheduledAt,
+        })
+      ),
     });
-  } catch (err: any) {
+  } catch (error) {
     console.error(
-      "[campaigns] Create campaign failed:",
-      err
+      "[campaigns] Failed to create campaign:",
+      error
     );
 
     return res.status(500).json({
-      ok: false,
-      error: String(err?.message ?? err),
+      error: "Failed to create campaign",
     });
   }
 });
 
-/*
- * Get campaigns for the logged-in user.
- */
-router.get("/", requireAuth, async (req: any, res: any) => {
+router.get("/", async (req, res) => {
   try {
-    const campaigns = await prisma.campaign.findMany({
-      where: {
-        userId: req.user.id,
-      },
+    const userId = req.query.userId
+      ? String(req.query.userId)
+      : undefined;
 
-      include: {
-        emails: true,
-      },
+    const campaigns =
+      await prisma.campaign.findMany({
+        where: userId
+          ? {
+              userId,
+            }
+          : undefined,
 
-      orderBy: {
-        createdAt: "desc",
-      },
-    });
-
-    return res.json({
-      ok: true,
-      campaigns,
-    });
-  } catch (err: any) {
-    console.error(
-      "[campaigns] Get campaigns failed:",
-      err
-    );
-
-    return res.status(500).json({
-      ok: false,
-      error: String(err?.message ?? err),
-    });
-  }
-});
-
-/*
- * Get campaign statistics.
- */
-router.get(
-  "/:id/stats",
-  requireAuth,
-  async (req: any, res: any) => {
-    try {
-      const campaign = await prisma.campaign.findFirst({
-        where: {
-          id: req.params.id,
-          userId: req.user.id,
+        orderBy: {
+          createdAt: "desc",
         },
 
-        select: {
-          id: true,
-          status: true,
+        include: {
+          sender: true,
 
           emails: {
-            select: {
-              status: true,
+            orderBy: {
+              scheduledAt: "asc",
             },
           },
         },
       });
 
-      if (!campaign) {
-        return res.status(404).json({
-          ok: false,
-          error: "Campaign not found.",
-        });
-      }
+    return res.json(campaigns);
+  } catch (error) {
+    console.error(
+      "[campaigns] Failed to fetch campaigns:",
+      error
+    );
 
-      const total = campaign.emails.length;
-
-      const scheduled = campaign.emails.filter(
-        (email) => email.status === "SCHEDULED"
-      ).length;
-
-      const processing = campaign.emails.filter(
-        (email) => email.status === "PROCESSING"
-      ).length;
-
-      const sent = campaign.emails.filter(
-        (email) => email.status === "SENT"
-      ).length;
-
-      const failed = campaign.emails.filter(
-        (email) => email.status === "FAILED"
-      ).length;
-
-      const completed = sent + failed;
-
-      const progress =
-        total === 0
-          ? 0
-          : Math.round((completed / total) * 100);
-
-      return res.json({
-        ok: true,
-
-        stats: {
-          total,
-          scheduled,
-          processing,
-          sent,
-          failed,
-          completed,
-          progress,
-          campaignStatus: campaign.status,
-        },
-      });
-    } catch (err: any) {
-      console.error(
-        "[campaigns] Get campaign stats failed:",
-        err
-      );
-
-      return res.status(500).json({
-        ok: false,
-        error: String(err?.message ?? err),
-      });
-    }
+    return res.status(500).json({
+      error: "Failed to fetch campaigns",
+    });
   }
-);
+});
 
-/*
- * Get email logs for a campaign.
- */
-router.get(
-  "/:id/emails",
-  requireAuth,
-  async (req: any, res: any) => {
-    try {
-      const campaign = await prisma.campaign.findFirst({
+router.get("/:id", async (req, res) => {
+  try {
+    const campaign =
+      await prisma.campaign.findUnique({
         where: {
           id: req.params.id,
-          userId: req.user.id,
         },
 
-        select: {
-          id: true,
-        },
-      });
+        include: {
+          sender: true,
 
-      if (!campaign) {
-        return res.status(404).json({
-          ok: false,
-          error: "Campaign not found.",
-        });
-      }
-
-      const status = req.query.status as
-        | "SCHEDULED"
-        | "PROCESSING"
-        | "SENT"
-        | "FAILED"
-        | undefined;
-
-      const emails = await prisma.email.findMany({
-        where: {
-          campaignId: campaign.id,
-
-          ...(status
-            ? {
-                status,
-              }
-            : {}),
-        },
-
-        select: {
-          id: true,
-          recipient: true,
-          subject: true,
-          status: true,
-          scheduledAt: true,
-          sentAt: true,
-          messageId: true,
-          errorMessage: true,
-          createdAt: true,
-          updatedAt: true,
-        },
-
-        orderBy: {
-          scheduledAt: "asc",
+          emails: {
+            orderBy: {
+              scheduledAt: "asc",
+            },
+          },
         },
       });
 
-      return res.json({
-        ok: true,
-        emails,
-      });
-    } catch (err: any) {
-      console.error(
-        "[campaigns] Get email logs failed:",
-        err
-      );
-
-      return res.status(500).json({
-        ok: false,
-        error: String(err?.message ?? err),
+    if (!campaign) {
+      return res.status(404).json({
+        error: "Campaign not found",
       });
     }
+
+    return res.json(campaign);
+  } catch (error) {
+    console.error(
+      "[campaigns] Failed to fetch campaign:",
+      error
+    );
+
+    return res.status(500).json({
+      error: "Failed to fetch campaign",
+    });
   }
-);
+});
 
 export default router;
